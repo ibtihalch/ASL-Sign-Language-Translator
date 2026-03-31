@@ -1,0 +1,10 @@
+# Ignorer les données
+data/
+
+# Ignorer le modèle
+model/
+
+# Ignorer les fichiers système
+__pycache__/
+*.pyc
+.env
