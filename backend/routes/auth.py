@@ -57,6 +57,7 @@ def google_login():
     return jsonify({
         "token": token_jwt,
         "user" : {
+            "id"    : str(user["_id"]),
             "name"    : user["name"],
             "email"   : user["email"],
             "role"    : user["role"],
@@ -123,6 +124,7 @@ def login():
     return jsonify({
         "token": token,
         "user" : {
+            "id"    : str(user["_id"]),
             "name"          : user["name"],
             "email"         : user["email"],
             "role"          : user["role"],
@@ -203,6 +205,7 @@ def update_profile():
     return jsonify({
         "message": "Profil mis à jour ✅",
         "user"   : {
+            "id"    : str(user["_id"]),
             "name"    : user.get("name", ""),
             "email"   : user.get("email", ""),
             "role"    : user.get("role", ""),
