@@ -474,7 +474,14 @@ export default function Profile() {
                       {val:"en",code:"EN",label:"English" },
                       {val:"ar",code:"AR",label:"العربية" },
                     ].map(opt=>(
-                      <Pill key={opt.val} selected={profile.language===opt.val} onClick={()=>field("language",opt.val)}>
+                      <Pill
+                        key={opt.val}
+                        selected={profile.language===opt.val}
+                        onClick={() => {
+                          field("language", opt.val);
+                          applyLanguage(opt.val);
+                        }}
+                      >
                         <span style={{fontSize:13,fontWeight:900,fontFamily:"monospace",color:profile.language===opt.val?"#2563eb":th.textSecondary}}>{opt.code}</span>
                         <span style={{fontSize:10,fontWeight:600,color:profile.language===opt.val?"#2563eb":th.textSecondary}}>{opt.label}</span>
                       </Pill>

@@ -1,25 +1,71 @@
-import tensorflow as tf
+"""
+routes/predict.py
+──────────────────
+POST /api/predict  → process one frame, return prediction + sentence
+POST /api/reset    → clear sentence and buffer
+GET  /api/words    → list of recognizable words
+"""
+
+import base64
+
+import cv2
 import numpy as np
-from tensorflow.keras.preprocessing import image
-import sys
+from flask import Blueprint, jsonify, request
+from flask_jwt_extended import jwt_required
 
-IMG_SIZE = 64
-model = tf.keras.models.load_model("model/asl_model.h5")
+from backend.realtime_service import process_frame, reset_session
+from backend.model_loader import load_model as _load_model
 
-import os
-class_names = sorted(os.listdir("data/train"))
+predict_bp = Blueprint("predict", __name__)
 
-def predict_image(img_path):
-    img = image.load_img(img_path, target_size=(IMG_SIZE, IMG_SIZE))
-    img_array = image.img_to_array(img) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
+# ── Load model once at import time ───────────────────────────
+_model, _idx_to_word = _load_model()
 
-    predictions = model.predict(img_array)
-    predicted_class = class_names[np.argmax(predictions)]
-    confidence = np.max(predictions) * 100
 
-    print(f"✅ Prédiction : {predicted_class}")
-    print(f"✅ Confiance  : {confidence:.2f}%")
+# ─────────────────────────────────────────────────────────────
+#  POST /api/predict
+#  Body: { "frame": "<base64 JPEG string>" }
+#  Returns: prediction, confidence, top3, sentence, still_progress
+# ─────────────────────────────────────────────────────────────
+@predict_bp.route("/predict", methods=["POST"])
+@jwt_required()
+def predict():
+    data = request.get_json(silent=True)
+    if not data or "frame" not in data:
+        return jsonify({"error": "Missing 'frame' field (base64 JPEG)"}), 400
 
-# Exemple d'utilisation
-predict_image("data/test/A/0.jpg")
+    try:
+        # Decode base64 → numpy BGR frame
+        img_bytes = base64.b64decode(data["frame"])
+        nparr     = np.frombuffer(img_bytes, np.uint8)
+        frame     = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return jsonify({"error": "Could not decode image"}), 400
+
+        result = process_frame(frame, _model, _idx_to_word)
+        return jsonify(result), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ─────────────────────────────────────────────────────────────
+#  POST /api/reset
+#  Clears sentence and frame buffer
+# ─────────────────────────────────────────────────────────────
+@predict_bp.route("/reset", methods=["POST"])
+@jwt_required()
+def reset():
+    reset_session()
+    return jsonify({"message": "Session reset ✅"}), 200
+
+
+# ─────────────────────────────────────────────────────────────
+#  GET /api/words
+#  Returns the list of words the model can recognize
+# ─────────────────────────────────────────────────────────────
+@predict_bp.route("/words", methods=["GET"])
+@jwt_required()
+def get_words():
+    words = sorted(_idx_to_word.values())
+    return jsonify({"words": words, "count": len(words)}), 200

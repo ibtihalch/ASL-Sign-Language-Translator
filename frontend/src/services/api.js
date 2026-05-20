@@ -45,3 +45,7 @@ export const getStats      = ()               => API.get("/conv/stats");
 export const getMe            = ()     => API.get("/auth/me");
 export const updateProfile    = (data) => API.put("/auth/profile", data);
 export const changePassword   = (data) => API.put("/auth/change-password", data);
+
+// Realtime ASL sentence (word-level)
+export const aslRealtimeReset = (data) => API.post("/asl/realtime/reset", data);
+export const aslRealtimeFrame = (data) => API.post("/asl/realtime/frame", data);

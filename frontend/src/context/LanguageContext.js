@@ -1,13 +1,25 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import { translations } from "./translations";
-import { updateProfile } from "../services/api";
 
 const LanguageContext = createContext();
 
+const normalizeLanguage = (value) => {
+  if (!value || typeof value !== "string") return "fr";
+  const v = value.toLowerCase();
+  if (v.startsWith("ar")) return "ar";
+  if (v.startsWith("en")) return "en";
+  if (v.startsWith("fr")) return "fr";
+  return "fr";
+};
+
 export function LanguageProvider({ children }) {
   const [language, setLanguage] = useState(() => {
-    const user = JSON.parse(localStorage.getItem("user") || "{}");
-    return user.language || "fr";
+    try {
+      const user = JSON.parse(localStorage.getItem("user") || "{}");
+      return normalizeLanguage(user.language);
+    } catch {
+      return "fr";
+    }
   });
 
   // RTL pour l'arabe
@@ -17,9 +29,14 @@ export function LanguageProvider({ children }) {
   }, [language]);
 
   const applyLanguage = (lang) => {
-    setLanguage(lang);
-    const user = JSON.parse(localStorage.getItem("user") || "{}");
-    localStorage.setItem("user", JSON.stringify({ ...user, language: lang }));
+    const normalized = normalizeLanguage(lang);
+    setLanguage(normalized);
+    try {
+      const user = JSON.parse(localStorage.getItem("user") || "{}");
+      localStorage.setItem("user", JSON.stringify({ ...user, language: normalized }));
+    } catch {
+      localStorage.setItem("user", JSON.stringify({ language: normalized }));
+    }
   };
 
   // t("nav_home") → retourne la traduction

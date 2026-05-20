@@ -1,42 +1,74 @@
-from flask import Blueprint, request, jsonify
-from model_loader import predict_gesture
-import numpy as np
-import cv2
+"""
+routes/predict.py
+POST /api/predict  → process frame → prediction + sentence
+POST /api/reset    → clear session
+GET  /api/words    → list of words
+POST /api/improve  → improve raw gloss with Ollama
+"""
+
 import base64
+import cv2
+import numpy as np
+from flask import Blueprint, jsonify, request, current_app
+from flask_jwt_extended import jwt_required
+
+from backend.realtime_service import process_frame, reset_session, gloss_to_natural
 
 predict_bp = Blueprint("predict", __name__)
 
-def get_model():
-    from app import model
-    return model
 
-@predict_bp.route("/predict", methods=["POST", "OPTIONS"])
+def _get_model():
+    return (
+        current_app.config["ASL_MODEL"],
+        current_app.config["ASL_IDX_TO_WORD"]
+    )
+
+
+@predict_bp.route("/predict", methods=["POST"])
+@jwt_required()
 def predict():
-    if request.method == "OPTIONS":
-        response = jsonify({"status": "ok"})
-        response.headers.add("Access-Control-Allow-Origin", "*")
-        response.headers.add("Access-Control-Allow-Headers", "Content-Type")
-        response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
-        return response, 200
-
+    data = request.get_json(silent=True)
+    if not data or "frame" not in data:
+        return jsonify({"error": "Missing 'frame' field (base64 JPEG)"}), 400
     try:
-        data = request.get_json()
-        if not data or "image" not in data:
-            return jsonify({"error": "Aucune image reçue"}), 400
-
-        image_data = data["image"]
-        if "," in image_data:
-            image_data = image_data.split(",")[1]
-
-        img_bytes = base64.b64decode(image_data)
-        img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-        frame     = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-
+        img_bytes = base64.b64decode(data["frame"])
+        nparr     = np.frombuffer(img_bytes, np.uint8)
+        frame     = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if frame is None:
-            return jsonify({"error": "Image invalide"}), 400
-
-        result = predict_gesture(get_model(), frame)
+            return jsonify({"error": "Could not decode image"}), 400
+        model, idx_to_word = _get_model()
+        result = process_frame(frame, model, idx_to_word)
         return jsonify(result), 200
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@predict_bp.route("/reset", methods=["POST"])
+@jwt_required()
+def reset():
+    reset_session()
+    return jsonify({"message": "Session reset"}), 200
+
+
+@predict_bp.route("/words", methods=["GET"])
+@jwt_required()
+def get_words():
+    _, idx_to_word = _get_model()
+    words = sorted(idx_to_word.values())
+    return jsonify({"words": words, "count": len(words)}), 200
+
+
+@predict_bp.route("/improve", methods=["POST"])
+@jwt_required()
+def improve():
+    """
+    POST /api/improve
+    Body: { "gloss": "mother help go" }
+    Returns: { "sentence": "My mother needs help going" }
+    """
+    data = request.get_json(silent=True)
+    if not data or "gloss" not in data:
+        return jsonify({"error": "Missing 'gloss' field"}), 400
+    words    = data["gloss"].strip().split()
+    sentence = gloss_to_natural(words)
+    return jsonify({"sentence": sentence, "gloss": data["gloss"]}), 200

@@ -1,80 +1,61 @@
 import tensorflow as tf
-import numpy as np
-import cv2
-import os
+import pickle
+import json
+from pathlib import Path
 
-IMG_SIZE = 64
-class_names = sorted(os.listdir("../data/train"))
+BASE_DIR  = Path(__file__).resolve().parent
+MODEL_DIR = BASE_DIR / "model"
+
+
+def build_model(num_classes: int) -> tf.keras.Model:
+    inputs = tf.keras.Input(shape=(20, 225))
+    x = tf.keras.layers.LayerNormalization()(inputs)
+    x = tf.keras.layers.Bidirectional(
+            tf.keras.layers.LSTM(128, return_sequences=True))(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Bidirectional(
+            tf.keras.layers.LSTM(64, return_sequences=False))(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.Dense(256, activation="relu")(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.Dropout(0.4)(x)
+    x = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
+    return tf.keras.Model(inputs, x)
+
 
 def load_model():
-    model = tf.keras.models.load_model("model/asl_model.h5")
-    print(f"✅ Modèle chargé ! {len(class_names)} classes : {class_names}")
-    return model
+    """
+    Returns (model, idx_to_word).
+    Tries H5 first (cleaner), falls back to pickle weights.
+    """
+    with open(MODEL_DIR / "mapping.json", encoding="utf-8") as f:
+        mapping = json.load(f)
 
-# ─── Masque couleur peau identique à webcam_predict.py ───
-def get_skin_mask(hsv):
-    lower_skin1 = np.array([0, 15, 60], dtype=np.uint8)
-    upper_skin1 = np.array([25, 255, 255], dtype=np.uint8)
-    lower_skin2 = np.array([170, 15, 60], dtype=np.uint8)
-    upper_skin2 = np.array([180, 255, 255], dtype=np.uint8)
-    mask1 = cv2.inRange(hsv, lower_skin1, upper_skin1)
-    mask2 = cv2.inRange(hsv, lower_skin2, upper_skin2)
-    mask = cv2.bitwise_or(mask1, mask2)
+    if "index_to_word" in mapping:
+        idx_to_word = {int(k): v for k, v in mapping["index_to_word"].items()}
+    elif "selected_words" in mapping:
+        idx_to_word = {i: w for i, w in enumerate(mapping["selected_words"])}
+    elif "word_to_index" in mapping:
+        idx_to_word = {int(v): k for k, v in mapping["word_to_index"].items()}
+    else:
+        idx_to_word = {int(k): v for k, v in mapping.items()}
 
-    kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.dilate(mask, kernel, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.GaussianBlur(mask, (5, 5), 0)
-    return mask
+    num_classes = len(idx_to_word)
 
-# ─── Preprocessing identique à webcam_predict.py ─────────
-def preprocess_frame(frame):
-    # Zone de détection identique
-    x, y, w, h = 100, 100, 300, 300
-    roi = frame[y:y+h, x:x+w]
+    # Try H5 first
+    h5_path = MODEL_DIR / "model_landmarks.h5"
+    if h5_path.exists():
+        try:
+            model = tf.keras.models.load_model(str(h5_path), compile=False)
+            print(f"✅ Model loaded from H5 — {num_classes} words")
+            return model, idx_to_word
+        except Exception as e:
+            print(f"⚠️  H5 load failed ({e}), trying pickle...")
 
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    mask = get_skin_mask(hsv)
-
-    # Fond blanc comme le dataset
-    roi_masked = cv2.bitwise_and(roi, roi, mask=mask)
-    background = np.ones_like(roi) * 255
-    mask_inv = cv2.bitwise_not(mask)
-    background = cv2.bitwise_and(background, background, mask=mask_inv)
-    roi_final = cv2.add(roi_masked, background)
-
-    # Resize + normalize
-    img = cv2.resize(roi_final, (IMG_SIZE, IMG_SIZE))
-    img = img / 255.0
-    img = np.expand_dims(img, axis=0)
-    return img
-
-# ─── Prédiction avec historique pour stabiliser ──────────
-history = []
-HISTORY_SIZE = 5
-
-def predict_gesture(model, frame):
-    global history
-    processed = preprocess_frame(frame)
-    predictions = model.predict(processed, verbose=0)
-    class_index = np.argmax(predictions)
-    confidence = float(np.max(predictions)) * 100
-
-    # Stabiliser avec historique
-    history.append(class_index)
-    if len(history) > HISTORY_SIZE:
-        history.pop(0)
-    stable_index = max(set(history), key=history.count)
-
-    # Top 3 prédictions
-    top3_idx = np.argsort(predictions[0])[::-1][:3]
-    top3 = [
-        {"letter": class_names[i], "confidence": round(float(predictions[0][i]) * 100, 2)}
-        for i in top3_idx
-    ]
-
-    return {
-        "letter": class_names[stable_index],
-        "confidence": round(confidence, 2),
-        "top3": top3
-    }
+    # Fallback to pickle weights
+    model = build_model(num_classes)
+    with open(MODEL_DIR / "model_weights.pkl", "rb") as f:
+        weights = pickle.load(f)
+    model.set_weights(weights)
+    print(f"✅ Model loaded from pickle — {num_classes} words")
+    return model, idx_to_word
