@@ -4,16 +4,12 @@ const API = axios.create({
   baseURL: "http://127.0.0.1:5000/api",
 });
 
-// ─── Token ajouté automatiquement ────────────────────────
 API.interceptors.request.use((req) => {
   const token = localStorage.getItem("token");
-  if (token) {
-    req.headers.Authorization = `Bearer ${token}`;
-  }
+  if (token) req.headers.Authorization = `Bearer ${token}`;
   return req;
 });
 
-// ─── Si 401 → rediriger vers login ───────────────────────
 API.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -26,26 +22,67 @@ API.interceptors.response.use(
   }
 );
 
-// ─── Auth ───────────────────────────────────────────────
+// Auth
 export const register = (data) => API.post("/auth/register", data);
-export const login    = (data) => API.post("/auth/login", data);
+export const login = (data) => API.post("/auth/login", data);
+export const googleLogin = (credential) => API.post("/auth/google", { credential });
 
-// ✅ AJOUT GOOGLE LOGIN
-export const googleLogin = (credential) =>
-  API.post("/auth/google", { credential });
-
-// ─── Conversation ───────────────────────────────────────
-export const saveMessage   = (data)           => API.post("/conv/message", data);
-export const getHistory    = (page = 1, type = "") =>
+// Conversation
+export const saveMessage = (data) => API.post("/conv/message", data);
+export const getHistory = (page = 1, type = "") =>
   API.get(`/conv/history?page=${page}&per_page=20${type ? `&type=${type}` : ""}`);
-export const deleteMessage = (id)             => API.delete(`/conv/message/${id}`);
-export const getStats      = ()               => API.get("/conv/stats");
+export const deleteMessage = (id) => API.delete(`/conv/message/${id}`);
+export const getStats = () => API.get("/conv/stats");
 
-// ─── Profil ─────────────────────────────────────────────
-export const getMe            = ()     => API.get("/auth/me");
-export const updateProfile    = (data) => API.put("/auth/profile", data);
-export const changePassword   = (data) => API.put("/auth/change-password", data);
+// Profile
+export const getMe = () => API.get("/auth/me");
+export const updateProfile = (data) => API.put("/auth/profile", data);
+export const changePassword = (data) => API.put("/auth/change-password", data);
 
-// Realtime ASL sentence (word-level)
+// Realtime ASL (letter/word)
 export const aslRealtimeReset = (data) => API.post("/asl/realtime/reset", data);
 export const aslRealtimeFrame = (data) => API.post("/asl/realtime/frame", data);
+
+// Stats / Leaderboard
+export const getUserStats = () => API.get("/stats");
+export const markWatched = (id) => API.post("/stats/watch", { lesson_id: id });
+export const submitQuiz = (data) => API.post("/stats/quiz", data);
+export const getLeaderboard = () => API.get("/stats/leaderboard");
+
+// Users search
+export const searchUsers = (q) => API.get(`/users/search?q=${encodeURIComponent(q)}`);
+export const getUserProfile = (id) => API.get(`/users/${id}`);
+export const getUserFriends = (id) => API.get(`/users/${id}/friends`);
+
+// Friends
+export const sendFriendRequest = (id) => API.post(`/friends/request/${id}`);
+export const acceptFriend = (id) => API.post(`/friends/accept/${id}`);
+export const declineFriend = (id) => API.post(`/friends/decline/${id}`);
+export const removeFriend = (id) => API.delete(`/friends/${id}`);
+export const getFriendRequests = () => API.get("/friends/requests");
+
+// Chat
+export const getConversations = () => API.get("/chat/conversations");
+export const getChatMessages = (id) => API.get(`/chat/messages/${id}`);
+export const sendChatMessage = (data) => API.post("/chat/messages", data);
+export const deleteChatMsg = (id) => API.delete(`/chat/messages/${id}`);
+export const getUnreadCount = () => API.get("/chat/unread");
+
+// Posts / Stories
+export const createPost = (data) => API.post("/posts", data);
+export const getUserPosts = (id, type) => API.get(`/posts/user/${id}?type=${type}`);
+export const toggleLike = (pid) => API.post(`/posts/${pid}/like`);
+export const getComments = (pid) => API.get(`/posts/${pid}/comments`);
+export const addComment = (pid, text) => API.post(`/posts/${pid}/comments`, { text });
+export const deletePost = (pid) => API.delete(`/posts/${pid}`);
+
+// Global feed
+export const getFeedPosts = (type = "post") => API.get(`/posts/feed?type=${type}`);
+
+// Views & reactions
+export const recordView = (pid) => API.post(`/posts/${pid}/view`);
+export const getViews = (pid) => API.get(`/posts/${pid}/views`);
+export const reactToPost = (pid, reaction) => API.post(`/posts/${pid}/react`, { reaction });
+export const getReactions = (pid) => API.get(`/posts/${pid}/reactions`);
+
+export default API;

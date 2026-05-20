@@ -42,7 +42,7 @@ def get_history():
     type_filter = request.args.get("type", None)   # "asl" | "speech" | None
 
     query = {"user_id": user_id}
-    if type_filter in ["asl", "speech"]:
+    if type_filter in ["asl", "speech", "wlasl"]:
         query["type"] = type_filter
 
     total    = messages_collection.count_documents(query)
