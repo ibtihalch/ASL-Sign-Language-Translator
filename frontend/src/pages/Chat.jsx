@@ -2,7 +2,15 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { themes } from "../context/themes";
 import VideoCall from "./VideoCall";
-import "bootstrap-icons/font/bootstrap-icons.css";
+
+const BI_CDN = "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css";
+if (!document.querySelector('link[data-bi]')) {
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = BI_CDN;
+  link.setAttribute("data-bi", "1");
+  document.head.appendChild(link);
+}
 
 const API_BASE = "http://localhost:5000/api";
 const ACCENT        = "#2563eb";

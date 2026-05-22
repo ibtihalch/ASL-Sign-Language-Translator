@@ -5,24 +5,36 @@ import bcrypt
 from datetime import datetime
 from bson import ObjectId
 import base64
+import os
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 auth_bp = Blueprint("auth", __name__)
-GOOGLE_CLIENT_ID = "448391805293-cfbgh0o6qamuc3uh4djeifa28qpkpd7u.apps.googleusercontent.com"
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 @auth_bp.route("/google", methods=["POST"])
 def google_login():
-    data  = request.get_json()
+    if not GOOGLE_CLIENT_ID:
+        return jsonify({"error": "GOOGLE_CLIENT_ID manquant dans la configuration backend"}), 500
+
+    data = request.get_json(silent=True) or {}
     token = data.get("credential")
+    if not token:
+        return jsonify({"error": "Credential Google manquant"}), 400
 
     try:
         info = id_token.verify_oauth2_token(
             token,
             google_requests.Request(),
-            GOOGLE_CLIENT_ID
+            GOOGLE_CLIENT_ID,
+            clock_skew_in_seconds=10,
         )
-    except ValueError:
+    except ValueError as e:
+        # Common causes: audience/client-id mismatch, expired token, malformed token.
+        print(f"[Google Auth] verify_oauth2_token failed: {e}")
         return jsonify({"error": "Token Google invalide"}), 401
+    except Exception as e:
+        print(f"[Google Auth] unexpected verification error: {e}")
+        return jsonify({"error": "Erreur de verification Google"}), 500
 
     email = info.get("email")
     name  = info.get("name", "")

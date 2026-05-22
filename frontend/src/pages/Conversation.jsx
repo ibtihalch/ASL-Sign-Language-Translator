@@ -76,6 +76,7 @@ export default function Conversation() {
   const [ollamaEnabled, setOllamaEnabled] = useState(null);
   const [sentencePending, setSentencePending] = useState(false);
   const [sentenceSource, setSentenceSource] = useState("none");
+  const [sentenceAlternatives, setSentenceAlternatives] = useState([]);
 
   const [sentence, setSentence] = useState("");
   const [messages, setMessages] = useState([]);
@@ -123,6 +124,7 @@ export default function Conversation() {
     setOllamaEnabled(null);
     setSentencePending(false);
     setSentenceSource("none");
+    setSentenceAlternatives([]);
   };
 
   const resetRealtimeSession = async () => {
@@ -212,6 +214,11 @@ export default function Conversation() {
     setOllamaEnabled(typeof data.ollama_enabled === "boolean" ? data.ollama_enabled : null);
     setSentencePending(Boolean(data.sentence_pending));
     setSentenceSource(data.sentence_source || "none");
+    setSentenceAlternatives(
+      Array.isArray(data.sentence_alternatives)
+        ? data.sentence_alternatives.filter((s) => typeof s === "string" && s.trim())
+        : []
+    );
     if (natural) setSentence(natural);
 
     if (data.word_committed) {
@@ -1342,6 +1349,30 @@ export default function Conversation() {
                     <div style={{ fontSize: 24, fontWeight: 800, color: "#26d3ff", lineHeight: 1.35, minHeight: 54 }}>
                       {activeSentence || t("conv_sentence_ph")}
                     </div>
+                    {sentenceAlternatives.length > 1 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {sentenceAlternatives.slice(0, 4).map((alt, i) => (
+                          <button
+                            key={`${alt}-${i}`}
+                            onClick={() => {
+                              setSentence(alt);
+                              setWordSentence(alt);
+                            }}
+                            style={{
+                              padding: "5px 10px",
+                              borderRadius: 999,
+                              border: `1px solid ${th.border}`,
+                              background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)",
+                              color: th.textSecondary,
+                              fontSize: 11,
+                              cursor: "pointer",
+                            }}
+                          >
+                            {alt}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div style={{ fontSize: 17, fontWeight: 600, minHeight: 46, lineHeight: 1.6, color: activeSentence ? th.textPrimary : th.textMuted, wordBreak: "break-word" }}>

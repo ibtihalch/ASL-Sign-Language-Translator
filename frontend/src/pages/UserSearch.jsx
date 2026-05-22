@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar";
 import { useTheme } from "../context/ThemeContext";
@@ -17,7 +17,6 @@ export default function UserSearch() {
   const [query,   setQuery]   = useState("");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [sent,    setSent]    = useState({});   // { userId: true } → demande envoyée
 
   // Debounce search
   const [timer, setTimer] = useState(null);
@@ -38,7 +37,6 @@ export default function UserSearch() {
   const handleAdd = async (userId) => {
     try {
       await sendFriendRequest(userId);
-      setSent(prev => ({ ...prev, [userId]: true }));
       setResults(prev => prev.map(u =>
         u.id === userId ? { ...u, relation: "request_sent" } : u
       ));

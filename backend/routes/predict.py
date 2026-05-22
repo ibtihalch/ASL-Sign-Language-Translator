@@ -12,7 +12,11 @@ import numpy as np
 from flask import Blueprint, jsonify, request, current_app
 from flask_jwt_extended import jwt_required
 
-from backend.realtime_service import process_frame, reset_session, gloss_to_natural
+from backend.realtime_service import (
+    process_frame,
+    reset_session,
+    gloss_to_natural_candidates,
+)
 
 predict_bp = Blueprint("predict", __name__)
 
@@ -69,6 +73,13 @@ def improve():
     data = request.get_json(silent=True)
     if not data or "gloss" not in data:
         return jsonify({"error": "Missing 'gloss' field"}), 400
-    words    = data["gloss"].strip().split()
-    sentence = gloss_to_natural(words)
-    return jsonify({"sentence": sentence, "gloss": data["gloss"]}), 200
+    words = data["gloss"].strip().split()
+    sentence, alternatives, source = gloss_to_natural_candidates(words)
+    return jsonify(
+        {
+            "sentence": sentence,
+            "alternatives": alternatives,
+            "source": source,
+            "gloss": data["gloss"],
+        }
+    ), 200

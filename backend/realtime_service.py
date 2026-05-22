@@ -8,6 +8,8 @@ import threading
 import time
 import urllib.request
 import os
+import json
+import re
 from collections import deque
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -36,6 +38,7 @@ NO_HAND_RESET_FRAMES = 2
 RAPID_CONFIDENCE = 0.72
 RAPID_STREAK_NEEDED = 3
 COMMIT_COOLDOWN_SEC = 0.45
+MAX_SENTENCE_ALTERNATIVES = 5
 
 MODEL_DIR = Path(__file__).resolve().parent / "model"
 
@@ -81,9 +84,21 @@ _pose_det = mp_vision.PoseLandmarker.create_from_options(
 
 # Ollama
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:1b")
+# If unset/empty, we auto-select the first installed local model.
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "").strip()
+# If requested model is unavailable, allow falling back to another installed model.
+OLLAMA_ALLOW_MODEL_FALLBACK = os.getenv("OLLAMA_ALLOW_MODEL_FALLBACK", "1").strip().lower() in {"1", "true", "yes", "on"}
+# Optional debug logging for Ollama failures/selection.
+OLLAMA_DEBUG = os.getenv("OLLAMA_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
+# If true, while Ollama is generating we show fallback text immediately.
+# If false (default), sentence stays empty/"pending" until Ollama returns.
+SHOW_PENDING_FALLBACK = os.getenv("SHOW_PENDING_FALLBACK", "0").strip().lower() in {"1", "true", "yes", "on"}
+# If true, when Ollama fails we do NOT synthesize creative fallback text.
+# We return the cleaned gloss as minimal output.
+OLLAMA_ONLY_MODE = os.getenv("OLLAMA_ONLY_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 _ollama_available = None
 _ollama_last_check_ts = 0.0
+_ollama_runtime_model = ""
 
 
 def _normalize_model_name(name: str) -> str:
@@ -105,7 +120,7 @@ def _ollama_model_is_available(model_names: List[str], target_model: str) -> boo
 
 
 def _check_ollama() -> bool:
-    global _ollama_available, _ollama_last_check_ts
+    global _ollama_available, _ollama_last_check_ts, _ollama_runtime_model
     if _ollama_available is not None and _ollama_available:
         return _ollama_available
 
@@ -125,18 +140,128 @@ def _check_ollama() -> bool:
             data = resp.json() if resp.content else {}
             models = data.get("models", []) if isinstance(data, dict) else []
             model_names = [str(m.get("name", "")) for m in models if isinstance(m, dict)]
-            _ollama_available = _ollama_model_is_available(model_names, OLLAMA_MODEL)
+            model_names = [m for m in model_names if m]
+            if not model_names:
+                _ollama_available = False
+                _ollama_runtime_model = ""
+            elif OLLAMA_MODEL:
+                if _ollama_model_is_available(model_names, OLLAMA_MODEL):
+                    _ollama_available = True
+                    _ollama_runtime_model = OLLAMA_MODEL
+                elif OLLAMA_ALLOW_MODEL_FALLBACK:
+                    _ollama_available = True
+                    _ollama_runtime_model = model_names[0]
+                else:
+                    _ollama_available = False
+                    _ollama_runtime_model = ""
+            else:
+                _ollama_available = True
+                _ollama_runtime_model = model_names[0]
     except Exception:
         _ollama_available = False
+        _ollama_runtime_model = ""
     if _ollama_available:
-        print(f"Ollama model available ({OLLAMA_MODEL}) - natural sentences enabled")
+        print(f"Ollama model available ({_ollama_runtime_model}) - natural sentences enabled")
     else:
-        print(f"Ollama model unavailable ({OLLAMA_MODEL}) - using fallback sentence")
+        wanted = OLLAMA_MODEL or "<auto>"
+        print(f"Ollama model unavailable ({wanted}) - using fallback sentence")
     return _ollama_available
 
 
+def _cleanup_sentence(text: str) -> str:
+    s = re.sub(r"\s+", " ", str(text or "")).strip().strip('"').strip("'")
+    if not s:
+        return ""
+    s = s[0].upper() + s[1:]
+    if s[-1] not in ".!?":
+        s += "."
+    return s
+
+
+def _dedupe_preserve(items: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for raw in items:
+        s = _cleanup_sentence(raw)
+        key = s.lower()
+        if not s or key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
+def _fallback_candidates(gloss_words: List[str]) -> List[str]:
+    cleaned = _clean_gloss_words(gloss_words)
+    if not cleaned:
+        return []
+
+    core = " ".join(cleaned)
+    candidates: List[str] = []
+
+    family_words = {"mother", "father", "sister", "brother", "family", "mom", "dad"}
+    progressive = {
+        "go": "going",
+        "come": "coming",
+        "help": "helping",
+        "work": "working",
+        "eat": "eating",
+        "drink": "drinking",
+    }
+
+    def _map_token(tok: str) -> str:
+        if tok in family_words:
+            return f"my {tok}"
+        return progressive.get(tok, tok)
+
+    # Question-focused templates when gloss starts with a wh-word.
+    wh_words = {"who", "what", "where", "when", "why", "how"}
+    if cleaned[0] in wh_words and len(cleaned) > 1:
+        rest_tokens = cleaned[1:]
+        rest = " ".join(_map_token(t) for t in rest_tokens)
+
+        # Special handling for low-vocabulary frequent pattern:
+        # "who go mother" -> meaningful options.
+        if "go" in rest_tokens and any(w in rest_tokens for w in family_words):
+            target = next((w for w in rest_tokens if w in family_words), "mother")
+            candidates.extend(
+                [
+                    f"Who is going with my {target}",
+                    f"Who is going to my {target}",
+                    f"Who should go with my {target}",
+                ]
+            )
+
+        candidates.extend(
+            [
+                f"{cleaned[0]} is {rest}",
+                f"{cleaned[0]} can {rest}",
+                f"{cleaned[0]} will {rest}",
+            ]
+        )
+    else:
+        mapped_core = " ".join(_map_token(t) for t in cleaned)
+        candidates.extend(
+            [
+                mapped_core,
+                f"I mean {mapped_core}",
+                f"Please understand: {mapped_core}",
+            ]
+        )
+
+    return _dedupe_preserve(candidates)[:MAX_SENTENCE_ALTERNATIVES]
+
+
 def _fallback_sentence(gloss_words: List[str]) -> str:
-    return " ".join(gloss_words).capitalize()
+    cands = _fallback_candidates(gloss_words)
+    return cands[0] if cands else ""
+
+
+def _minimal_sentence_from_gloss(gloss_words: List[str]) -> str:
+    cleaned = _clean_gloss_words(gloss_words)
+    if not cleaned:
+        return ""
+    return _cleanup_sentence(" ".join(cleaned))
 
 
 def _clean_gloss_words(gloss_words: List[str]) -> List[str]:
@@ -151,50 +276,126 @@ def _clean_gloss_words(gloss_words: List[str]) -> List[str]:
     return cleaned
 
 
-def _natural_from_gloss(gloss_words: List[str]) -> Tuple[str, str]:
+def _parse_ollama_suggestions(raw_text: str) -> Tuple[str, List[str]]:
+    text = (raw_text or "").strip()
+    if not text:
+        return "", []
+
+    payload = None
+    try:
+        payload = json.loads(text)
+    except Exception:
+        # Try to recover JSON object if model wrapped output with extra text.
+        m = re.search(r"\{[\s\S]*\}", text)
+        if m:
+            try:
+                payload = json.loads(m.group(0))
+            except Exception:
+                payload = None
+
+    if isinstance(payload, dict):
+        best = _cleanup_sentence(str(payload.get("best", "")))
+        alts_raw = payload.get("alternatives", [])
+        if not isinstance(alts_raw, list):
+            alts_raw = []
+        alternatives = _dedupe_preserve([str(x) for x in alts_raw if x is not None])
+        if best and best.lower() not in {a.lower() for a in alternatives}:
+            alternatives.insert(0, best)
+        if not best and alternatives:
+            best = alternatives[0]
+        return best, alternatives[:MAX_SENTENCE_ALTERNATIVES]
+
+    # Try extracting quoted candidate sentences from malformed JSON/text.
+    quoted = re.findall(r'"([^"]+)"', text)
+    key_like = {"best", "alternatives", "short_suggestions", "sentence", "json"}
+    quoted_candidates = []
+    for q in quoted:
+        ql = q.strip().lower()
+        if ql in key_like:
+            continue
+        if " " not in q:
+            continue
+        quoted_candidates.append(q)
+    quoted_candidates = _dedupe_preserve(quoted_candidates)
+    if quoted_candidates:
+        return quoted_candidates[0], quoted_candidates[:MAX_SENTENCE_ALTERNATIVES]
+
+    # Fallback line parsing
+    lines = [ln.strip("-* \t,") for ln in text.splitlines() if ln.strip()]
+    lines = [ln for ln in lines if ":" not in ln[:20]]
+    alternatives = _dedupe_preserve(lines)
+    best = alternatives[0] if alternatives else ""
+    return best, alternatives[:MAX_SENTENCE_ALTERNATIVES]
+
+
+def _natural_from_gloss(gloss_words: List[str]) -> Tuple[str, List[str], str]:
     if not gloss_words:
-        return "", "none"
+        return "", [], "none"
 
     if not _check_ollama() or requests is None:
-        return _fallback_sentence(gloss_words), "fallback"
+        if OLLAMA_ONLY_MODE:
+            minimal = _minimal_sentence_from_gloss(gloss_words)
+            fallback = [minimal] if minimal else []
+        else:
+            fallback = _fallback_candidates(gloss_words)
+        return (fallback[0] if fallback else ""), fallback, "fallback"
 
     gloss = " ".join(gloss_words)
     cleaned_gloss_words = _clean_gloss_words(gloss_words)
     cleaned_gloss = " ".join(cleaned_gloss_words)
     prompt = (
-        "You convert noisy ASL gloss tokens into one natural English sentence.\n"
+        "You convert noisy ASL gloss tokens into natural English.\n"
         "Rules:\n"
         "- Tokens may include repeated words and recognition noise.\n"
         "- Infer the most likely intended meaning.\n"
         "- Remove accidental repetition.\n"
-        "- Return only ONE short grammatical sentence in English.\n"
-        "- Do not explain.\n"
+        "- Generate 3 to 5 short grammatical sentence suggestions in English.\n"
+        "- Expand lightly with pronouns, prepositions, and helper words.\n"
+        "- Keep meaning close to tokens.\n"
+        "- Return STRICT JSON only, no markdown:\n"
+        '  {"best":"...", "alternatives":["...", "...", "..."]}\n'
         f"Raw tokens: {gloss}\n"
         f"Deduped tokens: {cleaned_gloss}\n"
-        "Sentence:"
+        "JSON:"
     )
     try:
         resp = requests.post(
             OLLAMA_URL,
             json={
-                "model": OLLAMA_MODEL,
+                "model": _ollama_runtime_model or OLLAMA_MODEL or "llama3.2:1b",
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0.15, "num_predict": 40},
+                "options": {"temperature": 0.3, "num_predict": 80},
             },
-            timeout=8.0,
+            timeout=12.0,
         )
+        if resp.status_code != 200:
+            if OLLAMA_DEBUG:
+                print(f"Ollama generate failed: status={resp.status_code} body={(resp.text or '')[:300]}")
+            raise RuntimeError(f"Ollama HTTP {resp.status_code}")
         text = (resp.json().get("response") or "").strip()
-        if text:
-            return text.replace('"', "").replace("\n", " ").strip(), "ollama"
-    except Exception:
-        pass
-    return _fallback_sentence(cleaned_gloss_words or gloss_words), "fallback"
+        best, alternatives = _parse_ollama_suggestions(text)
+        if best:
+            return best, alternatives, "ollama"
+    except Exception as e:
+        if OLLAMA_DEBUG:
+            print(f"Ollama generation error: {e}")
+
+    if OLLAMA_ONLY_MODE:
+        minimal = _minimal_sentence_from_gloss(cleaned_gloss_words or gloss_words)
+        fallback = [minimal] if minimal else []
+    else:
+        fallback = _fallback_candidates(cleaned_gloss_words or gloss_words)
+    return (fallback[0] if fallback else ""), fallback, "fallback"
 
 
 def gloss_to_natural(gloss_words: List[str]) -> str:
-    sentence, _ = _natural_from_gloss(gloss_words)
+    sentence, _, _ = _natural_from_gloss(gloss_words)
     return sentence
+
+
+def gloss_to_natural_candidates(gloss_words: List[str]) -> Tuple[str, List[str], str]:
+    return _natural_from_gloss(gloss_words)
 
 
 def _normalize(features: np.ndarray) -> np.ndarray:
@@ -278,6 +479,7 @@ _state: Dict[str, object] = {
     "buffer": deque(maxlen=BUFFER_SIZE),
     "gloss_words": [],
     "natural_sentence": "",
+    "sentence_alternatives": [],
     "sentence_source": "none",
     "sentence_pending": False,
     "last_word": "",
@@ -314,11 +516,12 @@ def _sentence_worker() -> None:
             req_id = int(_state["generation_request_id"])
             gloss_snapshot = list(_state["gloss_words"])
 
-        sentence, source = _natural_from_gloss(gloss_snapshot)
+        sentence, alternatives, source = _natural_from_gloss(gloss_snapshot)
 
         with _state_lock:
             if req_id >= int(_state["generated_request_id"]):
                 _state["natural_sentence"] = sentence
+                _state["sentence_alternatives"] = list(alternatives)
                 _state["sentence_source"] = source
                 _state["generated_request_id"] = req_id
                 _state["sentence_pending"] = False
@@ -334,6 +537,7 @@ def reset_session() -> None:
         _state["buffer"].clear()
         _state["gloss_words"].clear()
         _state["natural_sentence"] = ""
+        _state["sentence_alternatives"] = []
         _state["sentence_source"] = "none"
         _state["sentence_pending"] = False
         _state["last_word"] = ""
@@ -438,8 +642,14 @@ def process_frame(frame_bgr: np.ndarray, model, idx_to_word: dict, include_annot
                 if len(s["gloss_words"]) > MAX_SENTENCE_WORDS:
                     s["gloss_words"].pop(0)
 
-                # Immediate text while Ollama is generating.
-                s["natural_sentence"] = _fallback_sentence(s["gloss_words"])
+                # While waiting for generation, either show fallback instantly
+                # or keep sentence empty so UI clearly reflects pending state.
+                if SHOW_PENDING_FALLBACK:
+                    s["natural_sentence"] = _fallback_sentence(s["gloss_words"])
+                    s["sentence_alternatives"] = _fallback_candidates(s["gloss_words"])
+                else:
+                    s["natural_sentence"] = ""
+                    s["sentence_alternatives"] = []
                 s["sentence_source"] = "pending"
 
     if word_committed:
@@ -449,6 +659,7 @@ def process_frame(frame_bgr: np.ndarray, model, idx_to_word: dict, include_annot
         top3 = list(_state["top3"])
         gloss_words = list(_state["gloss_words"])
         sentence = str(_state["natural_sentence"])
+        sentence_alternatives = list(_state["sentence_alternatives"])
         sentence_source = str(_state["sentence_source"])
         sentence_pending = bool(_state["sentence_pending"])
         still_count = int(_state["still_count"])
@@ -473,6 +684,7 @@ def process_frame(frame_bgr: np.ndarray, model, idx_to_word: dict, include_annot
         "hand_present": hand_present,
         "gloss": " ".join(gloss_words),
         "sentence": sentence,
+        "sentence_alternatives": sentence_alternatives,
         "sentence_source": sentence_source,
         "sentence_pending": sentence_pending,
         "ollama_enabled": True if _ollama_available is True else False if _ollama_available is False else None,

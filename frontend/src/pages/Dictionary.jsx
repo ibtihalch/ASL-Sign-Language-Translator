@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useEffect, useState } from "react";
 import Navbar from "../components/Navbar";
 import { useTheme } from "../context/ThemeContext";
 import { themes } from "../context/themes";
@@ -7,11 +7,18 @@ import { useLang } from "../context/LanguageContext";
 import lessons     from "../data/lessons.json";
 import signsWords  from "../data/signsWords.json";
 import Quiz from "./Quiz";
-import 'bootstrap-icons/font/bootstrap-icons.css';
-import {  useEffect } from "react";
 
 
 import { getUserStats, markWatched as markWatchedAPI } from "../services/api";
+
+const BI_CDN = "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css";
+if (!document.querySelector('link[data-bi]')) {
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = BI_CDN;
+  link.setAttribute("data-bi", "1");
+  document.head.appendChild(link);
+}
 
 // ─── ASL Images (base64 embedded) ────────────────────────────────────────────
 const aslImages = {
